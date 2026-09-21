@@ -11,6 +11,16 @@ export default function plugin(bb: BbPluginApi) {
   });
   const host = bb.hosts.experimental_client({ contract: hostContract });
   bb.rpc.register(rpcContract, {
+    async remoteBranches({ projectId, hostId }) {
+      const project = await bb.sdk.projects.get({ projectId });
+      const sources = project.sources.filter(s => s.hostId === hostId);
+      if (!sources.length) throw new Error("This project has no checkout on the selected machine");
+      const results = await Promise.all(sources.map(source => host.call("remoteBranches", { source: source.path }, { hostId, timeoutMs: 180_000 })));
+      return {
+        branches: [...new Map(results.flatMap(r => r.branches).map(row => [JSON.stringify([row.remote, row.branch]), row])).values()],
+        errors: [...new Set(results.flatMap(r => r.errors))],
+      };
+    },
     async choices({ projectId, hostId }) {
       const project = await bb.sdk.projects.get({ projectId });
       const sources = project.sources.filter(s => s.hostId === hostId);

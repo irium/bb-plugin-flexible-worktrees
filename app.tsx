@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { definePluginApp, useRpc, type PluginEnvironmentProviderInputsProps } from "@get-bb/plugin-sdk/app";
-import { inputsSchema, type Inputs } from "./inputs";
+import { inputsSchema, type Inputs, type RemoteChoices } from "./inputs";
 import { WorktreePicker, type Checkout } from "./WorktreePicker";
 import type { rpcContract } from "./server";
 
@@ -8,6 +8,9 @@ function InputsForm(props: PluginEnvironmentProviderInputsProps) {
   const rpc = useRpc<typeof rpcContract>();
   const [form, setForm] = useState<Inputs>(() => inputsSchema.safeParse(props.value ?? {}).data ?? inputsSchema.parse({}));
   const [choices, setChoices] = useState<Checkout[]>([]);
+  const [remoteChoices, setRemoteChoices] = useState<RemoteChoices>({ branches: [], errors: [] });
+  const [remoteLoading, setRemoteLoading] = useState(false);
+  const [remoteRefresh, setRemoteRefresh] = useState(0);
   const [root, setRoot] = useState("~/dev/worktrees/{repo}");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -31,7 +34,21 @@ function InputsForm(props: PluginEnvironmentProviderInputsProps) {
     }
     return () => { active = false; };
   }, [props.projectId, hostId, refresh]);
+  const remoteMode = form.mode === "remote-branch";
+  useEffect(() => {
+    if (!remoteMode || !props.projectId || !hostId) return;
+    let active = true;
+    setRemoteLoading(true);
+    setRemoteChoices({ branches: [], errors: [] });
+    rpc.call("remoteBranches", { projectId: props.projectId, hostId }).then(result => {
+      if (active) setRemoteChoices(result);
+    }).catch(() => {
+      if (active) setRemoteChoices({ branches: [], errors: ["Couldn’t load remote branches. Check the connection and refresh."] });
+    }).finally(() => { if (active) setRemoteLoading(false); });
+    return () => { active = false; };
+  }, [remoteMode, props.projectId, hostId, remoteRefresh]);
   return <WorktreePicker form={form} choices={choices} defaultRoot={root} error={error} loading={loading}
+    remoteChoices={remoteChoices} remoteLoading={remoteLoading} onRefreshRemote={() => setRemoteRefresh(n => n + 1)}
     onChange={setForm} onRefresh={() => setRefresh(n => n + 1)} />;
 }
 export default definePluginApp(app => {

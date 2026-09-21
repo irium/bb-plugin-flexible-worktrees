@@ -14,11 +14,15 @@ Git-source installation builds the plugin locally. BB asks for confirmation beca
 
 Select a project and machine in **New thread**, then select **Flexible Worktrees** in the environment picker. Click the compact branch/checkout button beside it to open the **Workspace** popover. Changes apply immediately; **Done**, Escape, or clicking outside closes the popover.
 
-Switch between **Existing checkout** and **New worktree** at the top. Existing checkouts can be filtered by branch or path; **Enter a path** opens manual entry. New worktrees show folder and branch fields together, with an option to use an existing local branch. A destination preview shows the chosen path. The popover stays within the viewport and scrolls on smaller screens.
+Switch between **Existing checkout** and **New worktree** at the top. Existing checkouts can be filtered by branch or path; **Enter a path** opens manual entry. New worktrees show folder and branch fields together, with a Branch source selector for a new branch, existing local branch, or remote branch. A destination preview shows the chosen path. The popover stays within the viewport and scrolls on smaller screens.
 
 - **Use existing checkout**: choose a project worktree from the list, or enter an absolute path / `~/path` to another Git checkout. Uses its current branch, dirty files, and untracked files as-is. Does not switch branches, reset, clean, or run BB environment setup scripts. Separate clones can be entered manually; the plugin does not verify that a manually entered clone belongs to the selected project.
 - **New worktree + new branch**: set a parent directory, folder name, branch name, and starting revision. Blank folder and branch fields use BB's unique path key and suggested branch name. The default starting revision is `HEAD` of the project's source checkout.
 - **New worktree + existing local branch**: choose the directory and an existing local branch name. Git refuses a branch already checked out elsewhere; use the existing checkout mode instead.
+
+To review a colleague’s branch that you haven’t fetched, choose **New worktree → Branch source → Remote branch**. The picker automatically queries the configured remotes on the selected machine. Filter the list and click a branch; **Refresh remote branches** loads the latest remote heads. Launch the thread to fetch that branch and create a worktree tracking it. The local branch defaults to the selected branch’s name; optionally choose a different name if it already exists. Branch discovery uses `git ls-remote` without changing local refs; creation fetches the selected branch. The picker does not browse PR URLs.
+
+Remote mode requires a configured remote and working Git authentication on the selected machine. It fetches only the requested branch, without tags, pruning, or force. Existing local branches are refused rather than reset or updated; use existing local branch/checkout mode to reuse them. Authentication failures, missing branches, and network failures stop creation and can be retried. PRs from forks require that fork to be configured as a Git remote first; PR URLs are not accepted.
 
 Paths are resolved on the selected machine, not necessarily the machine running the BB server. The folder field is one name, not a path. Put nested directories in the parent-directory field. No shell expansion is performed except a leading `~`.
 
@@ -40,7 +44,7 @@ bb plugin config flexible-worktrees set defaultRoot '~/dev/worktrees/{repo}'
 - Git runs with argument arrays, never shell interpolation. This does not disable existing Git hooks or filters: creating a worktree runs Git's ordinary checkout behavior.
 - Canonical paths are claimed through BB before creation. A plugin-local ownership receipt allows retries to recognize an already-created worktree without overwriting its files. A mismatched receipt is refused.
 - Existing checkouts can be shared, so concurrent agents may edit the same files. Use separate worktrees for isolation.
-- No credentials, fetches, pushes, or remote services are needed.
+- Local modes need no network access. Remote branch mode uses the machine’s existing Git credentials to fetch; the plugin never pushes.
 
 This intentionally does not reproduce the built-in Worktree plugin's `.worktreeinclude` copying. Configure repository setup scripts if you need dependencies or ignored local files prepared in new worktrees.
 

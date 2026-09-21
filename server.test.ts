@@ -13,12 +13,12 @@ it("registers retention policy and makes cleanup non-destructive", async () => {
   await harness.lifecycle.dispose();
 });
 
-it("claims the canonical path before allowing any filesystem mutation", async () => {
+it.each(["existing", "remote-branch"])("claims the canonical path before allowing mutations in %s mode", async mode => {
   const { bb, harness } = createFakePluginHost({
     pluginId: "flexible-worktrees",
     experimental_callHostRpc: async ({ method }) => {
       if (method !== "plan") throw new Error("Must not mutate when claim failed");
-      return { mode: "existing", source: "/repo", path: "/canonical/repo", branch: "", base: "", pathKey: "key" };
+      return { mode, source: "/repo", path: "/canonical/repo", branch: "", base: "", pathKey: "key" };
     },
   });
   plugin(bb);
@@ -26,7 +26,7 @@ it("claims the canonical path before allowing any filesystem mutation", async ()
   const claim = vi.fn(async () => false);
   const result = await harness.registrations.environmentProviders.get("flexible-worktrees")!.create({
     project: fixture.project!, host: makeHostResponse(), projectCheckout: { path: "/repo", experimental_ownsPath: false },
-    gitRemote: null, inputs: inputsSchema.parse({ mode: "existing", checkout: "/repo" }),
+    gitRemote: null, inputs: inputsSchema.parse({ mode, checkout: "/repo", remoteBranch: "colleague/review" }),
     thread: makeThreadResponse(), suggestedBranchName: "bb/test", attempt: 1, pathKey: "key", rebuild: false,
     previous: null, experimental_claimPath: claim, report: { step() {}, log() {} }, signal: new AbortController().signal,
   });

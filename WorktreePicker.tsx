@@ -2,11 +2,14 @@ import { useId, useState, type ReactNode } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import { Input } from "./components/ui/input";
 import { Button } from "./components/ui/button";
-import { inputsSchema, type Inputs } from "./inputs";
+import { inputsSchema, type Inputs, type RemoteChoices } from "./inputs";
 
 export type Checkout = { path: string; branch: string };
 export interface WorktreePickerProps {
   form: Inputs;
+  remoteChoices: RemoteChoices;
+  remoteLoading: boolean;
+  onRefreshRemote(): void;
   choices: Checkout[];
   defaultRoot: string;
   loading: boolean;
@@ -30,9 +33,10 @@ export function shortPath(path: string) {
   return path.replace(/^\/Users\/[^/]+(?=\/|$)|^\/home\/[^/]+(?=\/|$)/, "~");
 }
 
-export function WorktreePicker({ form, choices, defaultRoot, loading, error, onChange, onRefresh }: WorktreePickerProps) {
+export function WorktreePicker({ form, choices, defaultRoot, loading, error, onChange, onRefresh, remoteChoices, remoteLoading, onRefreshRemote }: WorktreePickerProps) {
   const id = useId();
   const [open, setOpen] = useState(false);
+  const [remoteQuery, setRemoteQuery] = useState("");
   const [query, setQuery] = useState("");
   const [manual, setManual] = useState<boolean | null>(null);
   const existing = form.mode === "existing";
@@ -41,7 +45,7 @@ export function WorktreePicker({ form, choices, defaultRoot, loading, error, onC
   const filtered = choices.filter(c => `${c.branch} ${c.path}`.toLowerCase().includes(query.toLowerCase()));
   const parsed = inputsSchema.safeParse(form);
   const invalid = parsed.success ? "" : parsed.error.issues[0]!.message;
-  const summary = existing ? (selected?.branch || shortPath(form.checkout).split("/").filter(Boolean).pop() || "Choose checkout") : (form.branch || "New worktree");
+  const summary = existing ? (selected?.branch || shortPath(form.checkout).split("/").filter(Boolean).pop() || "Choose checkout") : (form.branch || (form.mode === "remote-branch" && form.remoteBranch) || "New worktree");
   const destination = existing ? form.checkout : `${form.root || defaultRoot}/${form.folder || "<automatic folder>"}`;
   const patch = (values: Partial<Inputs>) => onChange({ ...form, ...values });
   const field = (key: keyof Inputs, label: string, placeholder: string, hint?: string) => <div className="grid min-w-0 gap-1.5 text-xs font-medium text-foreground">
@@ -101,14 +105,42 @@ export function WorktreePicker({ form, choices, defaultRoot, loading, error, onC
             </>}
             <p className="text-xs text-muted-foreground">Keeps the checkout’s current branch and local changes.</p>
           </div> : <div className="grid gap-3">
+            <label className="grid gap-1.5 text-xs font-medium">
+              Branch source
+              <select aria-label="Branch source" className="h-8 rounded-md border border-border bg-background px-2 text-sm" value={form.mode}
+                onChange={e => patch({ mode: e.target.value as Inputs["mode"] })}>
+                <option value="new-branch">New branch</option>
+                <option value="existing-branch">Existing local branch</option>
+                <option value="remote-branch">Remote branch</option>
+              </select>
+            </label>
+            {form.mode === "remote-branch" && <div className="grid gap-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-medium">Remote branch</span>
+                <Button type="button" variant="ghost" size="sm" aria-label="Refresh remote branches" disabled={remoteLoading} onClick={onRefreshRemote}>
+                  <Icon kind="refresh" className={remoteLoading ? "animate-spin" : ""} />
+                </Button>
+              </div>
+              <Input aria-label="Filter remote branches" placeholder="Filter branches…" value={remoteQuery} onChange={e => setRemoteQuery(e.target.value)} />
+              <div role="group" aria-label="Remote branches" aria-busy={remoteLoading} className="max-h-44 overflow-y-auto rounded-lg border border-border p-1">
+                {remoteChoices.branches.filter(row => `${row.remote}/${row.branch}`.toLowerCase().includes(remoteQuery.toLowerCase())).map(row => <button
+                  key={JSON.stringify([row.remote, row.branch])} type="button" aria-pressed={form.remote === row.remote && form.remoteBranch === row.branch}
+                  className="flex w-full items-center justify-between gap-2 rounded-md px-2.5 py-2 text-left text-sm hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  onClick={() => patch({ remote: row.remote, remoteBranch: row.branch, branch: "" })}>
+                  <span className="break-all">{row.remote}/{row.branch}</span>
+                  {form.remote === row.remote && form.remoteBranch === row.branch && <Icon kind="check" />}
+                </button>)}
+                {remoteLoading ? <p role="status" className="p-3 text-xs text-muted-foreground">Loading remote branches…</p> : !remoteChoices.branches.some(row => `${row.remote}/${row.branch}`.toLowerCase().includes(remoteQuery.toLowerCase())) && <p className="p-3 text-xs text-muted-foreground">{remoteQuery ? "No matching branches." : "No remote branches found. Configure a Git remote for this repository, then refresh."}</p>}
+              </div>
+              {remoteChoices.errors.map(message => <p key={message} role="alert" className="text-xs text-destructive">{message}</p>)}
+              {form.remoteBranch && <p className="text-xs text-muted-foreground">Selected: {form.remote}/{form.remoteBranch}</p>}
+            </div>}
+
             <div className="grid grid-cols-2 gap-3">
               {field("folder", "Folder name", "Automatic")}
-              {field("branch", "Branch name", form.mode === "new-branch" ? "Automatic" : "feature/my-change")}
+              {field("branch", "Branch name", form.mode === "remote-branch" ? form.remoteBranch || "Same as remote branch" : form.mode === "new-branch" ? "Automatic" : "feature/my-change")}
             </div>
-            <label className="flex items-center gap-2 text-xs text-muted-foreground">
-              <input type="checkbox" className="h-3.5 w-3.5 accent-current" checked={form.mode === "existing-branch"} onChange={e => patch({ mode: e.target.checked ? "existing-branch" : "new-branch" })} />
-              Use an existing local branch
-            </label>
+            {form.mode === "remote-branch" && <p className="text-xs text-muted-foreground">Creates a local branch tracking the remote branch. Choose a different branch name above if that name already exists locally.</p>}
             {form.mode === "new-branch" && field("base", "Base revision", "HEAD")}
             {field("root", "Parent directory", defaultRoot)}
           </div>}

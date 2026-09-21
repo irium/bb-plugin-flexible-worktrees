@@ -62,12 +62,24 @@ export async function plan(args: { source: string; inputs: Inputs; defaultRoot: 
   const folder = inputs.folder || pathKey;
   if (!folder || folder === "." || folder === ".." || /[\\/\0\r\n]/.test(folder)) throw new Error("Invalid folder name");
   const path = await canonical(join(root, folder));
-  const branch = inputs.branch || args.suggestedBranch;
+  if (inputs.mode === "remote-branch") {
+    await validateRemote(source, inputs.remote, inputs.remoteBranch, signal);
+  }
+  const branch = inputs.branch || (inputs.mode === "remote-branch" ? inputs.remoteBranch : args.suggestedBranch);
   if (!branch || branch.startsWith("-") || branch === "HEAD") throw new Error("Invalid branch name");
   await git(source, ["check-ref-format", `refs/heads/${branch}`], signal);
   const base = inputs.mode === "existing-branch" ? `refs/heads/${branch}` : (inputs.base || "HEAD");
-  await git(source, ["rev-parse", "--verify", "--end-of-options", `${base}^{commit}`], signal);
-  return { mode: inputs.mode, source, path, branch, base, pathKey };
+  if (inputs.mode !== "remote-branch") await git(source, ["rev-parse", "--verify", "--end-of-options", `${base}^{commit}`], signal);
+  return { mode: inputs.mode, source, path, branch, base, pathKey, ...(inputs.mode === "remote-branch" ? { remote: inputs.remote, remoteBranch: inputs.remoteBranch } : {}) };
+}
+
+async function validateRemote(source: string, remote: string | undefined, branch: string | undefined, signal?: AbortSignal) {
+  if (!remote || remote.startsWith("-") || !(await git(source, ["remote"], signal)).split("\n").includes(remote)) {
+    throw new Error("Choose a configured Git remote, such as origin");
+  }
+  if (!branch || branch.startsWith("-")) throw new Error("Enter a remote branch name without the remote prefix");
+  await git(source, ["check-ref-format", `refs/heads/${branch}`], signal);
+  await git(source, ["check-ref-format", `refs/remotes/${remote}/${branch}`], signal);
 }
 
 /** Durable ownership receipt, not a launch/lifecycle registry. No paths are ever deleted. */
@@ -81,7 +93,7 @@ export async function create(p: Plan, dataDir: string, signal?: AbortSignal) {
   try { recorded = planSchema.parse(JSON.parse(await readFile(receipt, "utf8"))); } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
-  if (recorded && JSON.stringify(recorded) !== JSON.stringify(p)) throw new Error("This launch already reserved a different worktree. Restore the original settings or start a new thread.");
+  if (recorded && JSON.stringify(recorded) !== JSON.stringify(planSchema.parse(p))) throw new Error("This launch already reserved a different worktree. Restore the original settings or start a new thread.");
   const present = await exists(p.path);
   if (present) {
     if (!recorded) throw new Error("Destination already exists. Use Existing checkout; nothing was overwritten.");
@@ -91,15 +103,45 @@ export async function create(p: Plan, dataDir: string, signal?: AbortSignal) {
     await checkoutRoot(p.path, signal);
     return { path: p.path };
   }
+  if (p.mode === "remote-branch") {
+    await validateRemote(p.source, p.remote, p.remoteBranch, signal);
+    const local = await git(p.source, ["for-each-ref", "--format=%(refname)", `refs/heads/${p.branch}`], signal);
+    if (local.split("\n").includes(`refs/heads/${p.branch}`)) {
+      throw new Error("Local branch already exists. Use Existing checkout or an existing local branch, or choose a different local branch name.");
+    }
+    // Fetch only the requested branch after core has claimed the destination.
+    // No force, pruning, tags, or updates to local branches.
+    await git(p.source, ["fetch", "--no-tags", "--no-recurse-submodules", "--", p.remote!, `refs/heads/${p.remoteBranch}:refs/remotes/${p.remote}/${p.remoteBranch}`], signal);
+  }
   if (!recorded) await writeFile(receipt, JSON.stringify(p), { flag: "wx", mode: 0o600 });
   await mkdir(dirname(p.path), { recursive: true });
   // Refuse even an empty destination created since the initial check.
   if (await exists(p.path)) throw new Error("Destination appeared during creation; refusing to overwrite it");
-  const args = p.mode === "new-branch"
+  const args = p.mode === "remote-branch"
+    ? ["worktree", "add", "--track", "-b", p.branch, "--", p.path, `refs/remotes/${p.remote}/${p.remoteBranch}`]
+    : p.mode === "new-branch"
     ? ["worktree", "add", "-b", p.branch, "--", p.path, p.base]
     : ["worktree", "add", "--", p.path, `refs/heads/${p.branch}`];
   // Passing a full ref detaches HEAD, so existing-branch mode must use the validated short name.
   if (p.mode === "existing-branch") args[args.length - 1] = p.branch;
   await git(p.source, args, signal);
   return { path: p.path };
+}
+
+/** Query the live remote heads without changing any local refs or checkout. */
+export async function remoteBranches(source: string, signal?: AbortSignal) {
+  const remotes = (await git(source, ["remote"], signal)).split("\n").filter(Boolean);
+  const results = await Promise.all(remotes.map(async remote => {
+    try {
+      const raw = await git(source, ["ls-remote", "--heads", "--", remote], signal);
+      return { branches: raw.split("\n").flatMap(line => {
+        const ref = line.split("\t")[1];
+        return ref?.startsWith("refs/heads/") ? [{ remote, branch: ref.slice(11) }] : [];
+      }), errors: [] as string[] };
+    } catch {
+      signal?.throwIfAborted();
+      return { branches: [], errors: [`Couldn’t load branches from ${remote}. Check network access and Git authentication, then refresh.`] };
+    }
+  }));
+  return { branches: results.flatMap(r => r.branches).sort((a, b) => `${a.remote}/${a.branch}`.localeCompare(`${b.remote}/${b.branch}`)), errors: results.flatMap(r => r.errors) };
 }

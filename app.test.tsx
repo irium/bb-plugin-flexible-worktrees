@@ -13,7 +13,7 @@ async function setup(value: Record<string, string> | null = null, fail = false) 
   }, { rpc: { choices: () => {
     if (fail) throw new Error("Offline");
     return { worktrees: [{ path: "/repo", branch: "main" }, { path: "/worktrees/feature", branch: "feature/ui" }], defaultRoot: "/worktrees/{repo}" };
-  } } });
+  }, remoteBranches: () => ({ branches: [{ remote: "origin", branch: "colleague/review" }, { remote: "upstream", branch: "main" }], errors: [] }) } });
   return { slot, onChange };
 }
 
@@ -62,7 +62,7 @@ it("supports manual paths even when discovery fails", async () => {
 it("validates existing branches and keeps form actions from submitting the composer", async () => {
   const { slot, onChange } = await setup();
   fireEvent.click(screen.getByRole("button", { name: /Configure worktree/ }));
-  fireEvent.click(screen.getByLabelText("Use an existing local branch"));
+  fireEvent.change(screen.getByLabelText("Branch source"), { target: { value: "existing-branch" } });
   await waitFor(() => expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ status: "blocked" })));
   expect(screen.queryByLabelText("Base revision")).toBeNull();
   fireEvent.change(screen.getByLabelText("Branch name"), { target: { value: "existing" } });
@@ -70,5 +70,20 @@ it("validates existing branches and keeps form actions from submitting the compo
   for (const button of screen.getAllByRole("button")) expect(button.getAttribute("type")).toBe("button");
   fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  slot.lifecycle.unmount();
+});
+
+it("filters and selects a remote branch without typing Git details", async () => {
+  const { slot, onChange } = await setup();
+  fireEvent.click(screen.getByRole("button", { name: /Configure worktree/ }));
+  fireEvent.change(screen.getByLabelText("Branch source"), { target: { value: "remote-branch" } });
+  await waitFor(() => expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ status: "blocked" })));
+  await screen.findByRole("button", { name: "origin/colleague/review" });
+  fireEvent.change(screen.getByLabelText("Filter remote branches"), { target: { value: "colleague" } });
+  expect(screen.queryByRole("button", { name: "upstream/main" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "origin/colleague/review" }));
+  await waitFor(() => expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ status: "ready", value: expect.objectContaining({ mode: "remote-branch", remote: "origin", remoteBranch: "colleague/review", branch: "" }) })));
+  expect(screen.queryByLabelText("Base revision")).toBeNull();
+  for (const button of screen.getAllByRole("button")) expect(button.getAttribute("type")).toBe("button");
   slot.lifecycle.unmount();
 });
