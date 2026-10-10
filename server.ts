@@ -1,16 +1,34 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { hostContract, inputsSchema, rpcContract } from "./contract";
+import { DEFAULT_PATH_TEMPLATE, projectOverridesSettingSchema, templateSchema } from "./inputs";
+import { projectDefaults } from "./settings";
 export { rpcContract } from "./contract";
 
 export default function plugin(bb: BbPluginApi) {
   const settings = bb.settings.define({
-    defaultRoot: {
-      type: "string", label: "Default worktree parent directory ({repo} = repository name)",
-      default: "~/dev/worktrees/{repo}",
+    pathTemplate: {
+      type: "string", label: "Worktree path template",
+      description: "Complete destination, including the folder name. Blank uses ~/worktrees/{pathKey}. See the template reference below.",
+      default: DEFAULT_PATH_TEMPLATE, experimental_schema: templateSchema,
+    },
+    projectOverrides: {
+      type: "string", label: "Per-project path templates (JSON)",
+      description: "Optional JSON map of project IDs or remote identities to templates. Leave {} to use the global template. Examples are below.",
+      default: "{}", experimental_multiline: true, experimental_schema: projectOverridesSettingSchema,
     },
   });
   const host = bb.hosts.experimental_client({ contract: hostContract });
   bb.rpc.register(rpcContract, {
+    async preview({ projectId, hostId, inputs }) {
+      const project = await bb.sdk.projects.get({ projectId });
+      const sources = project.sources.filter(s => s.hostId === hostId);
+      const source = sources.find(s => s.isDefault) ?? sources[0];
+      if (!source) throw new Error("This project has no checkout on the selected machine");
+      return host.call("preview", {
+        source: source.path, inputs,
+        ...projectDefaults(await settings.get(), projectId, project.gitRemoteUrl),
+      }, { hostId });
+    },
     async remoteBranches({ projectId, hostId }) {
       const project = await bb.sdk.projects.get({ projectId });
       const sources = project.sources.filter(s => s.hostId === hostId);
@@ -28,7 +46,7 @@ export default function plugin(bb: BbPluginApi) {
       const lists = await Promise.all(sources.map(source => host.call("list", { source: source.path }, { hostId })));
       return {
         worktrees: [...new Map(lists.flat().map(row => [row.path, row])).values()],
-        defaultRoot: (await settings.get()).defaultRoot,
+        ...projectDefaults(await settings.get(), projectId, project.gitRemoteUrl),
       };
     },
   });
@@ -42,7 +60,7 @@ export default function plugin(bb: BbPluginApi) {
       ctx.report.step("Validating checkout and destination");
       const p = await host.call("plan", {
         source: ctx.projectCheckout.path, inputs: ctx.inputs,
-        defaultRoot: (await settings.get()).defaultRoot,
+        ...projectDefaults(await settings.get(), ctx.project.id, ctx.project.gitRemoteUrl),
         pathKey: ctx.pathKey, suggestedBranch: ctx.suggestedBranchName,
       }, options);
       if (!await ctx.experimental_claimPath(p.path)) return { status: "failed", message: "Another launch reserved this path. Choose a different directory or reuse its environment." };

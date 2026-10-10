@@ -29,3 +29,26 @@ export const remoteChoicesSchema = z.object({
   errors: z.array(z.string()),
 });
 export type RemoteChoices = z.infer<typeof remoteChoicesSchema>;
+
+const templateTokens = new Set(["repo", "repoPath", "checkoutParent", "branch", "pathKey"]);
+export const templateSchema = z.string().max(4096)
+  .refine(s => !/[\0\r\n]/.test(s), "Must be a single line")
+  .refine(s => {
+    const rest = s.replace(/\{([^{}]+)\}/g, (match, token: string) => templateTokens.has(token) ? "" : match);
+    return !/[{}]/.test(rest);
+  }, "Use only {repo}, {repoPath}, {checkoutParent}, {branch}, or {pathKey}");
+export const DEFAULT_PATH_TEMPLATE = "~/worktrees/{pathKey}";
+export const pathDefaultsSchema = z.object({
+  pathTemplate: templateSchema.transform(value => value.trim() ? value : DEFAULT_PATH_TEMPLATE).default(DEFAULT_PATH_TEMPLATE),
+});
+export type PathDefaults = z.infer<typeof pathDefaultsSchema>;
+export const projectOverridesSchema = z.record(z.string().min(1), templateSchema);
+export const projectOverridesSettingSchema = z.string().max(65536).superRefine((value, ctx) => {
+  try { projectOverridesSchema.parse(JSON.parse(value)); }
+  catch { ctx.addIssue({ code: "custom", message: "Use a JSON object mapping project IDs or remote identities to path templates with supported variables" }); }
+});
+export const destinationPreviewSchema = z.object({
+  path: z.string(), root: z.string(), folder: z.string(),
+  automaticBranch: z.boolean(), automaticFolder: z.boolean(),
+});
+export type DestinationPreview = z.infer<typeof destinationPreviewSchema>;

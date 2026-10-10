@@ -2,7 +2,7 @@ import { useId, useState, type ReactNode } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import { Input } from "./components/ui/input";
 import { Button } from "./components/ui/button";
-import { inputsSchema, type Inputs, type RemoteChoices } from "./inputs";
+import { inputsSchema, type Inputs, type RemoteChoices, type DestinationPreview } from "./inputs";
 
 export type Checkout = { path: string; branch: string };
 export interface WorktreePickerProps {
@@ -11,7 +11,10 @@ export interface WorktreePickerProps {
   remoteLoading: boolean;
   onRefreshRemote(): void;
   choices: Checkout[];
-  defaultRoot: string;
+  pathTemplate: string;
+  preview: DestinationPreview | null;
+  previewLoading: boolean;
+  previewError: string;
   loading: boolean;
   error: string;
   onChange(form: Inputs): void;
@@ -33,7 +36,7 @@ export function shortPath(path: string) {
   return path.replace(/^\/Users\/[^/]+(?=\/|$)|^\/home\/[^/]+(?=\/|$)/, "~");
 }
 
-export function WorktreePicker({ form, choices, defaultRoot, loading, error, onChange, onRefresh, remoteChoices, remoteLoading, onRefreshRemote }: WorktreePickerProps) {
+export function WorktreePicker({ form, choices, pathTemplate, preview, previewLoading, previewError, loading, error, onChange, onRefresh, remoteChoices, remoteLoading, onRefreshRemote }: WorktreePickerProps) {
   const id = useId();
   const [open, setOpen] = useState(false);
   const [remoteQuery, setRemoteQuery] = useState("");
@@ -44,9 +47,9 @@ export function WorktreePicker({ form, choices, defaultRoot, loading, error, onC
   const showManual = manual ?? Boolean(form.checkout && !selected && !loading);
   const filtered = choices.filter(c => `${c.branch} ${c.path}`.toLowerCase().includes(query.toLowerCase()));
   const parsed = inputsSchema.safeParse(form);
-  const invalid = parsed.success ? "" : parsed.error.issues[0]!.message;
+  const invalid = parsed.success ? previewError : parsed.error.issues[0]!.message;
   const summary = existing ? (selected?.branch || shortPath(form.checkout).split("/").filter(Boolean).pop() || "Choose checkout") : (form.branch || (form.mode === "remote-branch" && form.remoteBranch) || "New worktree");
-  const destination = existing ? form.checkout : `${form.root || defaultRoot}/${form.folder || "<automatic folder>"}`;
+  const destination = existing ? form.checkout : preview?.path ?? "";
   const patch = (values: Partial<Inputs>) => onChange({ ...form, ...values });
   const field = (key: keyof Inputs, label: string, placeholder: string, hint?: string) => <div className="grid min-w-0 gap-1.5 text-xs font-medium text-foreground">
     <label htmlFor={`${id}-${key}`}>{label}</label>
@@ -137,16 +140,19 @@ export function WorktreePicker({ form, choices, defaultRoot, loading, error, onC
             </div>}
 
             <div className="grid grid-cols-2 gap-3">
-              {field("folder", "Folder name", "Automatic")}
+              {field("folder", "Folder name", preview?.folder || "Automatic")}
               {field("branch", "Branch name", form.mode === "remote-branch" ? form.remoteBranch || "Same as remote branch" : form.mode === "new-branch" ? "Automatic" : "feature/my-change")}
             </div>
             {form.mode === "remote-branch" && <p className="text-xs text-muted-foreground">Creates a local branch tracking the remote branch. Choose a different branch name above if that name already exists locally.</p>}
             {form.mode === "new-branch" && field("base", "Base revision", "HEAD")}
-            {field("root", "Parent directory", defaultRoot)}
+            {field("root", "Parent directory", preview?.root || "From path template", "Blank parent and folder fields use the path template. Edit either to override that part.")}
+            <p className="break-all font-mono text-xs text-muted-foreground">Template: {pathTemplate}</p>
           </div>}
+          {previewLoading && <p role="status" className="text-xs text-muted-foreground">Resolving destination…</p>}
           {destination && <div className="rounded-lg bg-muted/50 px-3 py-2">
             <div className="mb-1 text-xs text-muted-foreground">{existing ? "Selected checkout" : "Destination"}</div>
             <div className="break-all font-mono text-xs leading-relaxed" title={destination}>{shortPath(destination)}</div>
+            {!existing && (preview?.automaticBranch || preview?.automaticFolder) && <p className="mt-1 text-xs text-muted-foreground">Automatic names are assigned at launch.</p>}
           </div>}
           {invalid && <p role="alert" className="text-xs text-destructive">{invalid}</p>}
           {error && <p role="alert" className="text-xs text-destructive">Couldn’t load checkouts. Enter a path or try refreshing.</p>}

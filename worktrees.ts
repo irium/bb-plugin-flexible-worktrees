@@ -4,7 +4,7 @@ import { mkdir, readFile, realpath, lstat, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { createHash } from "node:crypto";
-import { planSchema, type Inputs, type Plan } from "./inputs";
+import { pathDefaultsSchema, planSchema, templateSchema, type Inputs, type Plan, type PathDefaults, type DestinationPreview } from "./inputs";
 
 const exec = promisify(execFile);
 export async function git(cwd: string, args: string[], signal?: AbortSignal) {
@@ -14,10 +14,10 @@ export async function git(cwd: string, args: string[], signal?: AbortSignal) {
   });
   return stdout.trimEnd();
 }
-function expand(path: string) {
+function expand(path: string, relativeTo?: string) {
   const expanded = path === "~" ? homedir() : path.startsWith("~/") ? join(homedir(), path.slice(2)) : path;
-  if (!isAbsolute(expanded)) throw new Error("Use an absolute path or ~/path");
-  return resolve(expanded);
+  if (!isAbsolute(expanded) && !relativeTo) throw new Error("Use an absolute path or ~/path");
+  return relativeTo ? resolve(relativeTo, expanded) : resolve(expanded);
 }
 export async function canonical(path: string): Promise<string> {
   try { return await realpath(path); } catch (error) {
@@ -49,25 +49,71 @@ export async function list(source: string, signal?: AbortSignal) {
     return [{ path, branch: fields.find(f => f.startsWith("branch "))?.slice(7).replace(/^refs\/heads\//, "") ?? "(detached)" }];
   });
 }
-export async function plan(args: { source: string; inputs: Inputs; defaultRoot: string; pathKey: string; suggestedBranch: string }, signal?: AbortSignal): Promise<Plan> {
+type PlanArgs = { source: string; inputs: Inputs; pathTemplate?: string; pathKey: string; suggestedBranch: string };
+
+function chosenBranch(inputs: Inputs, suggestedBranch: string) {
+  return inputs.branch || (inputs.mode === "remote-branch" ? inputs.remoteBranch : suggestedBranch);
+}
+async function validateBranch(source: string, branch: string, signal?: AbortSignal) {
+  if (!branch || branch.startsWith("-") || branch === "HEAD") throw new Error("Invalid branch name");
+  await git(source, ["check-ref-format", `refs/heads/${branch}`], signal);
+}
+
+async function destination(source: string, inputs: Inputs, defaults: PathDefaults, pathKey: string, branch: string, preview: boolean, signal?: AbortSignal): Promise<DestinationPreview> {
+  // {repo} retains the primary checkout's name; relative paths use the selected source checkout.
+  const common = await realpath(await git(source, ["rev-parse", "--path-format=absolute", "--git-common-dir"], signal));
+  const automaticBranch = preview && !inputs.branch && inputs.mode === "new-branch";
+  const values: Record<string, string> = {
+    repo: basename(dirname(common)), repoPath: source, checkoutParent: dirname(source),
+    branch: automaticBranch ? "<automatic branch>" : branch.replace(/[\\/:*?"<>|\x00-\x1f]/g, "-"),
+    pathKey,
+  };
+  const render = (template: string) => templateSchema.parse(template).replace(/\{([^{}]+)\}/g, (_, token: string) => values[token]!);
+  let root: string, folder: string;
+  if (inputs.root && inputs.folder) {
+    root = expand(render(inputs.root)); folder = inputs.folder;
+  } else {
+    const rendered = render(defaults.pathTemplate);
+    if (!basename(rendered) || [".", ".."].includes(basename(rendered))) throw new Error("Path template must end in a folder name");
+    const full = expand(rendered, source);
+    root = dirname(full); folder = basename(full);
+  }
+  if (inputs.root) root = expand(render(inputs.root));
+  if (inputs.folder) folder = inputs.folder;
+  if (!folder || folder === "." || folder === ".." || /[\\/\0\r\n]/.test(folder)) throw new Error("Invalid folder name");
+  const path = await canonical(join(root, folder));
+  const usedTemplates = `${inputs.root || dirname(defaults.pathTemplate)} ${inputs.folder ? "" : basename(defaults.pathTemplate)}`;
+  return {
+    path, root: dirname(path), folder: basename(path),
+    automaticBranch: automaticBranch && usedTemplates.includes("{branch}"),
+    automaticFolder: preview && usedTemplates.includes("{pathKey}"),
+  };
+}
+
+/** Read-only preview; BB's automatic branch and path key do not exist until launch. */
+export async function preview(args: { source: string; inputs: Inputs } & PathDefaults, signal?: AbortSignal): Promise<DestinationPreview> {
+  const source = await checkoutRoot(args.source, signal);
+  if (args.inputs.mode === "existing") {
+    const path = await checkoutRoot(args.inputs.checkout, signal);
+    return { path, root: dirname(path), folder: basename(path), automaticBranch: false, automaticFolder: false };
+  }
+  const branch = chosenBranch(args.inputs, "bb/automatic-preview");
+  await validateBranch(source, branch, signal);
+  return destination(source, args.inputs, pathDefaultsSchema.parse(args), "<automatic folder>", branch, true, signal);
+}
+
+export async function plan(args: PlanArgs, signal?: AbortSignal): Promise<Plan> {
   const { inputs, pathKey } = args;
   const source = await checkoutRoot(args.source, signal);
   if (inputs.mode === "existing") {
     return { mode: inputs.mode, source, path: await checkoutRoot(inputs.checkout, signal), branch: "", base: "", pathKey };
   }
-  // Use the primary checkout's name even when the source is itself a linked worktree.
-  const common = await realpath(await git(source, ["rev-parse", "--path-format=absolute", "--git-common-dir"], signal));
-  const repo = basename(dirname(common));
-  const root = expand((inputs.root || args.defaultRoot).replaceAll("{repo}", repo));
-  const folder = inputs.folder || pathKey;
-  if (!folder || folder === "." || folder === ".." || /[\\/\0\r\n]/.test(folder)) throw new Error("Invalid folder name");
-  const path = await canonical(join(root, folder));
+  const branch = chosenBranch(inputs, args.suggestedBranch);
+  await validateBranch(source, branch, signal);
+  const { path } = await destination(source, inputs, pathDefaultsSchema.parse(args), pathKey, branch, false, signal);
   if (inputs.mode === "remote-branch") {
     await validateRemote(source, inputs.remote, inputs.remoteBranch, signal);
   }
-  const branch = inputs.branch || (inputs.mode === "remote-branch" ? inputs.remoteBranch : args.suggestedBranch);
-  if (!branch || branch.startsWith("-") || branch === "HEAD") throw new Error("Invalid branch name");
-  await git(source, ["check-ref-format", `refs/heads/${branch}`], signal);
   const base = inputs.mode === "existing-branch" ? `refs/heads/${branch}` : (inputs.base || "HEAD");
   if (inputs.mode !== "remote-branch") await git(source, ["rev-parse", "--verify", "--end-of-options", `${base}^{commit}`], signal);
   return { mode: inputs.mode, source, path, branch, base, pathKey, ...(inputs.mode === "remote-branch" ? { remote: inputs.remote, remoteBranch: inputs.remoteBranch } : {}) };
