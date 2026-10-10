@@ -5,10 +5,16 @@ A new-thread environment provider that lets you choose the checkout, worktree di
 ## Install
 
 ```sh
-bb plugin install 'git:https://github.com/spachava753/bb-plugin-flexible-worktrees.git@^0.1.0'
+bb plugin install 'git:https://github.com/spachava753/bb-plugin-flexible-worktrees.git@^0.2.0'
 ```
 
 Git-source installation builds the plugin locally. BB asks for confirmation because plugins run with full trust.
+
+### Upgrading from 0.1.x
+
+Version 0.2.0 replaces `defaultRoot` with `pathTemplate`. The default destination is now `~/worktrees/{pathKey}`. To keep the previous grouped layout, set `pathTemplate` to `~/dev/worktrees/{repo}/{pathKey}`; for a custom old root, use that root followed by `/{pathKey}`. Existing checkouts and worktrees are not moved or removed.
+
+Git installs tracking `^0.1.0` do not select 0.2.x. They remain on 0.1.x unless their source range is changed. Do not remove the installed plugin just to change its range: removal deletes its BB settings. Back up your settings before switching installation sources.
 
 ## Use
 
